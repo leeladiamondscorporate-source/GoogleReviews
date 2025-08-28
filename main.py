@@ -2,27 +2,30 @@
 """
 main.py
 
-1. Reads a merchant CSV feed (URL or local file)
-2. Generates a Google-Shopping product_reviews XML with realistic reviews
-3. Uploads the XML to Google Cloud Storage under Googlefinal/
+1) Reads a merchant CSV feed (URL, local file, or gs:// path)
+2) Generates a Google Shopping "product_reviews" XML (fake but realistic reviews)
+3) Uploads the XML to Google Cloud Storage (e.g., Googlefinal/leela_reviews.xml)
 """
 
 import os
 import argparse
-import pandas as pd
-from faker import Faker
 import random
 import xml.etree.ElementTree as ET
+from io import BytesIO
+
+import pandas as pd
+from faker import Faker
 from dateutil import tz
 from tqdm import tqdm
 from google.cloud import storage
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="Generate & upload Leela Diamonds reviews XML")
     p.add_argument(
         "--csv-source",
-        required=True,
-        help="URL or local path to your combined_google_merchant_feed CSV"
+        required=False,
+        help="URL, local path, or gs://bucket/path to combined_google_merchant_feed.csv"
     )
     p.add_argument(
         "--output",
@@ -43,11 +46,42 @@ def parse_args():
     p.add_argument(
         "--gcs-dest",
         default="Googlefinal/leela_reviews.xml",
-        help="Destination path in the bucket"
+        help="Destination object path in the bucket"
     )
     return p.parse_args()
 
+
+def load_csv_anywhere(src: str) -> pd.DataFrame:
+    """Load CSV from http(s), local path, or gs://bucket/path.csv"""
+    src = (src or "").strip()
+    if not src:
+        raise ValueError("csv-source is empty. Provide a URL, local path, or gs:// path.")
+
+    # gs:// support
+    if src.startswith("gs://"):
+        client = storage.Client()
+        without = src[5:]
+        bucket_name, _, blob_path = without.partition("/")
+        if not bucket_name or not blob_path:
+            raise ValueError(f"Invalid GCS path: {src}")
+        blob = client.bucket(bucket_name).blob(blob_path)
+        if not blob.exists():
+            raise FileNotFoundError(f"GCS object not found: {src}")
+        data = blob.download_as_bytes()
+        return pd.read_csv(BytesIO(data), dtype=str)
+
+    # http(s):// or local file
+    if src.startswith(("http://", "https://")):
+        return pd.read_csv(src, dtype=str)
+
+    if not os.path.exists(src):
+        raise FileNotFoundError(f"Local CSV not found: {src}")
+
+    return pd.read_csv(src, dtype=str)
+
+
 def generate_reviews_xml(df: pd.DataFrame, output_path: str, n_per_product: int):
+    """Create product_reviews XML per Google's 2.3 schema."""
     fake = Faker()
     titles = [
         "Absolutely Stunning",
@@ -64,7 +98,7 @@ def generate_reviews_xml(df: pd.DataFrame, output_path: str, n_per_product: int)
         "Very happy with my purchase—exceptional quality and clear, bright sparkle.",
     ]
 
-    # XML skeleton
+    # XML skeleton with schema reference
     ET.register_namespace("xsi", "http://www.w3.org/2001/XMLSchema-instance")
     feed = ET.Element(
         "feed",
@@ -83,11 +117,18 @@ def generate_reviews_xml(df: pd.DataFrame, output_path: str, n_per_product: int)
     review_id = 1
     utc = tz.gettz("UTC")
 
+    # Defensive: ensure required columns exist
+    required_cols = {"id", "link", "title"}
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"CSV missing required columns: {missing}. Found: {list(df.columns)}")
+
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Products"):
-        pid = row["id"]
-        url = row["link"]
-        name = row.get("title", pid)
-        for _ in range(n_per_product):
+        pid = str(row["id"])
+        url = str(row["link"])
+        name = str(row.get("title", pid))
+
+        for _ in range(max(0, int(n_per_product))):
             rev = ET.SubElement(reviews_el, "review")
             ET.SubElement(rev, "review_id").text = str(review_id)
 
@@ -98,23 +139,21 @@ def generate_reviews_xml(df: pd.DataFrame, output_path: str, n_per_product: int)
             ET.SubElement(rev, "review_timestamp").text = ts.isoformat()
 
             ET.SubElement(rev, "title").text = random.choice(titles)
-            ET.SubElement(
-                rev, "content"
-            ).text = random.choice(templates).format(name=name)
+            ET.SubElement(rev, "content").text = random.choice(templates)
 
             ET.SubElement(rev, "review_url", {"type": "singleton"}).text = url
 
             ratings = ET.SubElement(rev, "ratings")
-            ET.SubElement(ratings, "overall", {"min": "1", "max": "5"}).text = str(
-                random.randint(4, 5)
-            )
+            ET.SubElement(ratings, "overall", {"min": "1", "max": "5"}).text = str(random.randint(4, 5))
 
             products = ET.SubElement(rev, "products")
             product = ET.SubElement(products, "product")
             pids = ET.SubElement(product, "product_ids")
 
+            # No GTINs – we supply a pseudo-gtin for structure and real MPN for matching
             gtins = ET.SubElement(pids, "gtins")
-            ET.SubElement(gtins, "gtin").text = pid + "CA"
+            ET.SubElement(gtins, "gtin").text = f"{pid}CA"
+
             mpns = ET.SubElement(pids, "mpns")
             ET.SubElement(mpns, "mpn").text = pid
 
@@ -129,30 +168,37 @@ def generate_reviews_xml(df: pd.DataFrame, output_path: str, n_per_product: int)
     # write file
     tree = ET.ElementTree(feed)
     tree.write(output_path, encoding="utf-8", xml_declaration=True)
-    print(f"Generated {review_id-1} reviews → {output_path}")
+    print(f"Generated {review_id - 1} reviews → {output_path}")
+
 
 def upload_to_gcs(local_file: str, bucket_name: str, dest_path: str):
-    client = storage.Client()  # uses ADC from GOOGLE_APPLICATION_CREDENTIALS
+    client = storage.Client()  # uses ADC via GOOGLE_APPLICATION_CREDENTIALS
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(dest_path)
+    blob.content_type = "application/xml"
+    blob.cache_control = "public, max-age=3600"
     blob.upload_from_filename(local_file)
     print(f"Uploaded → gs://{bucket_name}/{dest_path}")
+
 
 def main():
     args = parse_args()
 
-    # 1. Load CSV (URL or local)
-    if args.csv_source.startswith(("http://", "https://")):
-        df = pd.read_csv(args.csv_source, dtype=str)
-    else:
-        df = pd.read_csv(args.csv_source, dtype=str)
-    print(f"Loaded {len(df)} products from {args.csv_source}")
+    # Allow env fallback if someone forgot the arg
+    csv_source = args.csv_source or os.environ.get("CSV_URL", "").strip()
+    if not csv_source:
+        raise SystemExit("ERROR: --csv-source not provided and CSV_URL env is empty.")
 
-    # 2. Generate XML
+    # 1) Load CSV
+    df = load_csv_anywhere(csv_source)
+    print(f"Loaded {len(df)} products from {csv_source}")
+
+    # 2) Generate XML
     generate_reviews_xml(df, args.output, args.n_per_product)
 
-    # 3. Upload to GCS
+    # 3) Upload to GCS
     upload_to_gcs(args.output, args.gcs_bucket, args.gcs_dest)
+
 
 if __name__ == "__main__":
     main()
