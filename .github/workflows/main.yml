@@ -1,0 +1,92 @@
+name: 🗓️ Daily Reviews Feed + Keepalive
+
+on:
+  schedule:
+    - cron: "0 0 * * *"   # 00:00 UTC daily
+  workflow_dispatch:       # manual trigger
+
+permissions:
+  contents: write          # required for keepalive commit
+  actions: read
+
+concurrency:
+  group: daily-reviews
+  cancel-in-progress: false
+
+jobs:
+  generate-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # 1) Checkout
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      # 2) Python
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # 3) Install deps
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas faker python-dateutil tqdm google-cloud-storage
+
+      # 4) Auth to GCP (uses service-account JSON in secret GCP_SA_KEY)
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          project_id: ${{ secrets.GCP_PROJECT }}
+
+      # 5) Make ADC visible to google-cloud-storage
+      - name: Export ADC path
+        run: |
+          if [ -n "${GOOGLE_GHA_CREDS_PATH}" ]; then
+            echo "GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_GHA_CREDS_PATH}" >> "$GITHUB_ENV"
+          fi
+
+      # 6) Generate & Upload Reviews
+      - name: Generate & Upload Reviews
+        env:
+          CSV_URL:    ${{ secrets.CSV_URL }}
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+        run: |
+          python main.py \
+            --csv-source "$CSV_URL" \
+            --output "leela_reviews.xml" \
+            --n-per-product 2 \
+            --gcs-bucket "$GCS_BUCKET" \
+            --gcs-dest "Googlefinal/leela_reviews.xml"
+
+      # --- Keep the repo "active" so schedules don't auto-disable after 60 days ---
+      # Get current UTC day
+      - name: Get current UTC day
+        id: day
+        run: echo "day=$(date -u +%d)" >> "$GITHUB_OUTPUT"
+
+      # Commit a tiny keepalive file only on the 1st (UTC) and only for scheduled runs
+      - name: Monthly keepalive commit (1st of month, UTC)
+        if: ${{ github.event_name == 'schedule' && steps.day.outputs.day == '01' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p .github
+          echo "$ts" > .github/reviews-keepalive
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/reviews-keepalive
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore(reviews-keepalive): $ts"
+            git push
+          fi
