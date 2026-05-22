@@ -41,7 +41,7 @@ def parse_args():
     p.add_argument(
         "--gcs-bucket",
         required=True,
-        help="Name of your GCS bucket (e.g. sitemaps.leeladiamond.com)"
+        help="Name of your GCS bucket (e.g. leela-asia)"
     )
     p.add_argument(
         "--gcs-dest",
@@ -176,7 +176,7 @@ def upload_to_gcs(local_file: str, bucket_name: str, dest_path: str):
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(dest_path)
     blob.content_type = "application/xml"
-    blob.cache_control = "public, max-age=3600"
+    blob.cache_control = "public, max-age=86400"
     blob.upload_from_filename(local_file)
     print(f"Uploaded → gs://{bucket_name}/{dest_path}")
 
