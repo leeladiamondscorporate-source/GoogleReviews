@@ -55,8 +55,8 @@ jobs:
       # 6) Generate & Upload Reviews
       - name: Generate & Upload Reviews
         env:
-          CSV_URL:    ${{ secrets.CSV_URL }}
-          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+          CSV_URL:    https://storage.googleapis.com/leela-asia/Googlefinal/combined_google_merchant_feed.csv
+          GCS_BUCKET: leela-asia
         run: |
           python main.py \
             --csv-source "$CSV_URL" \
