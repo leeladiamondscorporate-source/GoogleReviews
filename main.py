@@ -2,7 +2,7 @@
 """
 main.py
 
-1) Reads a merchant CSV feed (URL, local file, or gs:// path)
+1) Reads a merchant CSV feed (URL, local file, or r2:// path)
 2) Generates a Google Shopping "product_reviews" XML (fake but realistic reviews)
 3) Uploads the XML to Cloudflare R2 (e.g., Googlefinal/leela_reviews.xml)
 """
@@ -25,7 +25,7 @@ def parse_args():
     p.add_argument(
         "--csv-source",
         required=False,
-        help="URL, local path, or gs://bucket/path to combined_google_merchant_feed.csv"
+        help="URL, local path, or r2://bucket/path to combined_google_merchant_feed.csv"
     )
     p.add_argument(
         "--output",
@@ -52,10 +52,18 @@ def parse_args():
 
 
 def load_csv_anywhere(src: str) -> pd.DataFrame:
-    """Load CSV from http(s) or local path."""
+    """Load CSV from http(s), r2://bucket/key, or local path."""
     src = (src or "").strip()
     if not src:
-        raise ValueError("csv-source is empty. Provide a URL, local path, or gs:// path.")
+        raise ValueError("csv-source is empty. Provide a URL, local path, or r2:// path.")
+
+    if src.startswith("r2://"):
+        without_scheme = src[5:]
+        bucket_name, _, object_key = without_scheme.partition("/")
+        if not bucket_name or not object_key:
+            raise ValueError(f"Invalid R2 path: {src}")
+        response = r2_client().get_object(Bucket=bucket_name, Key=object_key)
+        return pd.read_csv(BytesIO(response["Body"].read()), dtype=str)
 
     # http(s):// or local file
     if src.startswith(("http://", "https://")):
