@@ -36,34 +36,23 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas faker python-dateutil tqdm google-cloud-storage
-
-      # 4) Auth to GCP (uses service-account JSON in secret GCP_SA_KEY)
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-          project_id: ${{ secrets.GCP_PROJECT }}
-
-      # 5) Make ADC visible to google-cloud-storage
-      - name: Export ADC path
-        run: |
-          if [ -n "${GOOGLE_GHA_CREDS_PATH}" ]; then
-            echo "GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_GHA_CREDS_PATH}" >> "$GITHUB_ENV"
-          fi
+          pip install pandas faker python-dateutil tqdm boto3
 
       # 6) Generate & Upload Reviews
       - name: Generate & Upload Reviews
         env:
-          CSV_URL:    https://storage.googleapis.com/leela-asia/Googlefinal/combined_google_merchant_feed.csv
-          GCS_BUCKET: leela-asia
+          CSV_URL: https://feeds.leeladiamond.com/Googlefinal/combined_google_merchant_feed.csv
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: leela-feeds
         run: |
           python main.py \
             --csv-source "$CSV_URL" \
             --output "leela_reviews.xml" \
             --n-per-product 2 \
-            --gcs-bucket "$GCS_BUCKET" \
-            --gcs-dest "Googlefinal/leela_reviews.xml"
+            --r2-bucket "$R2_BUCKET" \
+            --r2-dest "Googlefinal/leela_reviews.xml"
 
       # --- Keep the repo "active" so schedules don't auto-disable after 60 days ---
       # Get current UTC day
