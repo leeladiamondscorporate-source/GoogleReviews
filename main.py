@@ -4,7 +4,7 @@ main.py
 
 1) Reads a merchant CSV feed (URL, local file, or gs:// path)
 2) Generates a Google Shopping "product_reviews" XML (fake but realistic reviews)
-3) Uploads the XML to Google Cloud Storage (e.g., Googlefinal/leela_reviews.xml)
+3) Uploads the XML to Cloudflare R2 (e.g., Googlefinal/leela_reviews.xml)
 """
 
 import os
@@ -17,7 +17,7 @@ import pandas as pd
 from faker import Faker
 from dateutil import tz
 from tqdm import tqdm
-from google.cloud import storage
+import boto3
 
 
 def parse_args():
@@ -39,12 +39,12 @@ def parse_args():
         help="Number of reviews to generate per product"
     )
     p.add_argument(
-        "--gcs-bucket",
+        "--r2-bucket",
         required=True,
-        help="Name of your GCS bucket (e.g. leela-asia)"
+        help="Name of your R2 bucket (e.g. leela-feeds)"
     )
     p.add_argument(
-        "--gcs-dest",
+        "--r2-dest",
         default="Googlefinal/leela_reviews.xml",
         help="Destination object path in the bucket"
     )
@@ -52,23 +52,10 @@ def parse_args():
 
 
 def load_csv_anywhere(src: str) -> pd.DataFrame:
-    """Load CSV from http(s), local path, or gs://bucket/path.csv"""
+    """Load CSV from http(s) or local path."""
     src = (src or "").strip()
     if not src:
         raise ValueError("csv-source is empty. Provide a URL, local path, or gs:// path.")
-
-    # gs:// support
-    if src.startswith("gs://"):
-        client = storage.Client()
-        without = src[5:]
-        bucket_name, _, blob_path = without.partition("/")
-        if not bucket_name or not blob_path:
-            raise ValueError(f"Invalid GCS path: {src}")
-        blob = client.bucket(bucket_name).blob(blob_path)
-        if not blob.exists():
-            raise FileNotFoundError(f"GCS object not found: {src}")
-        data = blob.download_as_bytes()
-        return pd.read_csv(BytesIO(data), dtype=str)
 
     # http(s):// or local file
     if src.startswith(("http://", "https://")):
@@ -171,14 +158,27 @@ def generate_reviews_xml(df: pd.DataFrame, output_path: str, n_per_product: int)
     print(f"Generated {review_id - 1} reviews → {output_path}")
 
 
-def upload_to_gcs(local_file: str, bucket_name: str, dest_path: str):
-    client = storage.Client()  # uses ADC via GOOGLE_APPLICATION_CREDENTIALS
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(dest_path)
-    blob.content_type = "application/xml"
-    blob.cache_control = "public, max-age=86400"
-    blob.upload_from_filename(local_file)
-    print(f"Uploaded → gs://{bucket_name}/{dest_path}")
+def r2_client():
+    return boto3.client(
+        "s3",
+        endpoint_url=os.environ["R2_ENDPOINT"],
+        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+        region_name="auto",
+    )
+
+
+def upload_to_r2(local_file: str, bucket_name: str, dest_path: str):
+    r2_client().upload_file(
+        local_file,
+        bucket_name,
+        dest_path,
+        ExtraArgs={
+            "ContentType": "application/xml",
+            "CacheControl": "public, max-age=86400",
+        },
+    )
+    print(f"Uploaded -> r2://{bucket_name}/{dest_path}")
 
 
 def main():
@@ -196,8 +196,8 @@ def main():
     # 2) Generate XML
     generate_reviews_xml(df, args.output, args.n_per_product)
 
-    # 3) Upload to GCS
-    upload_to_gcs(args.output, args.gcs_bucket, args.gcs_dest)
+    # 3) Upload to R2
+    upload_to_r2(args.output, args.r2_bucket, args.r2_dest)
 
 
 if __name__ == "__main__":
