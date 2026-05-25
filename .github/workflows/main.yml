@@ -41,7 +41,7 @@ jobs:
       # 6) Generate & Upload Reviews
       - name: Generate & Upload Reviews
         env:
-          CSV_URL: https://feeds.leeladiamond.com/Googlefinal/combined_google_merchant_feed.csv
+          CSV_URL: r2://leela-feeds/Googlefinal/combined_google_merchant_feed.csv
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
