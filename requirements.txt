@@ -2,4 +2,4 @@ pandas
 faker
 python-dateutil
 tqdm
-google-cloud-storage
+boto3
